@@ -1,0 +1,10 @@
+name: vampyr-paper
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - matplotlib
+  - numpy
+  - python=3.9
+  - scipy
+  - vampyr
