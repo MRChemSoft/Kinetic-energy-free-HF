@@ -1,7 +1,7 @@
 import numpy as np
 import numpy.linalg as LA
+from  vampyr import vampyr3d as vp
 from Operators import CouloumbOperator, ExchangeOperator, NuclearOperator, HelmholtzOperator
-from non_kintetic import calc_overlap, norm_vec
 
 def scf_solver(Phi_n, fock_n, atoms, mra, epsilon):
     """Kinetric free Hartree-Fock SCF solver
@@ -35,11 +35,10 @@ def scf_solver(Phi_n, fock_n, atoms, mra, epsilon):
         H = HelmholtzOperator(epsilon=np.diag(fock_n), mra=mra, prec=epsilon)
 
         Phi_np1 = -2.0*H(V_nuc(Phi_n) + J_n(Phi_n) - K_n(Phi_n))
-        print(fock_n)
 
         # Update fock matrix
         d_Phi_n = Phi_np1 - Phi_n
-        update = norm_vec(d_Phi_n)
+        update = np.array([d_phi_n.norm() for d_phi_n in d_Phi_n])
         s1 = calc_overlap(d_Phi_n, Phi_n)
         s2 = calc_overlap(Phi_np1, d_Phi_n)
 
@@ -65,17 +64,17 @@ def scf_solver(Phi_n, fock_n, atoms, mra, epsilon):
         Phi_n = U.transpose() @ Phi_np1_norm
 
         updates.append(update)
-        energies.append(calc_energies(atoms, mra, epsilon, fock_n, Phi_n))
+        energies.append(calc_energies(atoms, mra, epsilon, fock_n, Phi_n, V_nuc))
 
 
     return np.array(updates), energies, Phi_n
 
-def calc_energies(atoms, mra, epsilon, fock_n, Phi_n):
+
+def calc_energies(atoms, mra, epsilon, fock_n, Phi_n, V_nuc):
     """"Calcuate all energy contributions"""
 
     J = CouloumbOperator(Phi_n, mra, prec=epsilon)
     K = ExchangeOperator(Phi_n, mra, prec=epsilon)
-    V_nuc = NuclearOperator(mra, atoms, prec=epsilon)
 
 
     sum_orb_energy = 2.0*np.trace(fock_n)
@@ -88,3 +87,41 @@ def calc_energies(atoms, mra, epsilon, fock_n, Phi_n):
                     "$E_{en}$":electron_nuclear_energy,
                     "$E_{ex}$": exchange_energy, "$E_{kin}$":kinetic_energy,
                     "$E_{tot}$":total_energy}
+
+
+def calc_overlap(Phi_0, Phi_1):
+    """Calculate the overlap matrix between the orbitals Phi_0 and Phi_1
+
+    Parameters:
+    Phi_0 : Orbital vector
+    Phi_1 : Orbital vector
+
+    Returns:
+    Overlap matrix
+
+    """
+
+    m = np.empty((len(Phi_0), len(Phi_1)))
+    for i in range(len(Phi_0)):
+        for j in range(len(Phi_1)):
+            m[i, j] = vp.dot(Phi_0[i], Phi_1[j])
+    return m
+
+def starting_guess(mra, prec, nr_of_orbitals, center):
+    """Primitive starting guess, works for Be"""
+
+    P_eps = vp.ScalingProjector(mra=mra, prec=prec)
+    Phi = []
+    for i in range(1, nr_of_orbitals+1):
+        def gauss(r):
+            R = np.sqrt((r[0]-center[0])**2 + (r[1]-center[1])**2 + (r[2] - center[2])**2)
+            return np.exp(-R*R/i)
+
+        orb = P_eps(gauss)
+        orb.normalize()
+        Phi.append(orb)
+    Phi = np.array(Phi)
+
+    eig, U = LA.eig(calc_overlap(Phi, Phi))
+    Sm5 = U @ np.diag(eig**(-0.5)) @ U.transpose()
+    return Sm5 @ Phi
