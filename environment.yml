@@ -5,6 +5,7 @@ channels:
 dependencies:
   - matplotlib
   - numpy
+  - pandas
   - python=3.9
   - scipy
   - vampyr

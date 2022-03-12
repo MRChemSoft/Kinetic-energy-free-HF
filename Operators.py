@@ -1,80 +1,112 @@
 import numpy as np
 from vampyr import vampyr3d as vp
 
-class ExchangeOperator():
+class HelmholtzOperator():
     """
-    Vectorized Exchange operator
+    Vectorized Helmholtz operator
 
     Parameters
     ----------
-
-    Phi : Orbital vector
     mra : The multiresolution analysis we work on
+    lamb : vector of lambda parameters, mu_i = sqrt(-2*lambda_i)
     prec : Precision requirement
 
     Attributes
     ----------
-    Phi : Orbitals
-    mra : mra
-    prec : Precision
-    P : Poisson Operator
+    operators : list containing HelmholtzOperators for each orbital
 
     """
-    def __init__(self, Psi, mra, prec=1.0e-4):
-        self.Psi = Psi
+    def __init__(self, mra, lamb, prec):
         self.mra = mra
+        self.lamb = lamb
         self.prec = prec
-        self.P = vp.PoissonOperator(mra=mra, prec=self.prec)
+        self.operators = []
+        self.setup()
+
+    def setup(self):
+        mu = [np.sqrt(-2.0*l) if l < 0 else 1.0 for l in self.lamb]
+        for m in mu:
+            self.operators.append(vp.HelmholtzOperator(mra=self.mra, exp=m, prec=self.prec))
+
+    def __call__(self, Psi):
+        """Operate the Helmholtz operator onto an orbital vector"""
+        return np.array([self.operators[i](Psi[i]) for i in range(len(Psi))])
+
+class ExchangeOperator():
+    """
+    Vectorized Exchange operator
+
+    K(phi) = \sum_i P[phi * psi_i] * psi_i
+
+    Parameters
+    ----------
+    mra : The multiresolution analysis we work on
+    Psi : Orbital vector defining the operator
+    prec : Precision requirement
+
+    Attributes
+    ----------
+    poisson : Poisson Operator
+
+    """
+    def __init__(self, mra, Psi, prec):
+        self.mra = mra
+        self.Psi = Psi
+        self.prec = prec
+        self.poisson = vp.PoissonOperator(mra=mra, prec=self.prec)
 
     def __call__(self, Phi):
-        """Operate the excahnge operator onto an orbital Vector Phi"""
+        """Apply the exchange operator onto an orbital vector Phi"""
 
         Phi_out = []
         for j in range(len(Phi)):
-            tmp = (self.Psi[0]*self.P(Phi[j]*self.Psi[0])).crop(self.prec)
+            V_j0 = self.poisson(Phi[j] * self.Psi[0])
+            tmp = (self.Psi[0] * V_j0).crop(self.prec)
             for i in range(1, len(self.Psi)):
-                tmp += (self.Psi[i]*self.P((Phi[j]*self.Psi[i]).crop(self.prec))).crop(self.prec)
+                V_ji = self.poisson(Phi[j] * self.Psi[i])
+                tmp += (self.Psi[i] * V_ji).crop(self.prec)
+            tmp *= 4.0*np.pi
             Phi_out.append(tmp)
-        return 4*np.pi*np.array(Phi_out)
+        return np.array([phi.crop(self.prec) for phi in Phi_out])
 
 
 class CouloumbOperator():
     """
     Vectorized Couloumb operator
 
+    J(phi) = \sum_i P[psi_i * psi_i] * phi
+
     Parameters
     ----------
-
-    Phi : Orbital vector
     mra : The multiresolution analysis we work on
+    Psi : Orbital vector defining the operator
     prec : Precision requirement
 
     Attributes
     ----------
-    Phi : Orbitals
-    mra : mra
-    prec : Precision
-    P : Poisson Operator
-    rho : Electronic density
+    poisson : Poisson operator
+    potential : Coulomb potential
 
     """
-    def __init__(self, Phi, mra, prec=1.0e-4):
-        self.Phi = Phi
+    def __init__(self, mra, Psi, prec):
         self.mra = mra
+        self.Psi = Psi
         self.prec = prec
-        self.P = vp.PoissonOperator(mra=mra, prec=self.prec)
-        self.rho = None
+        self.poisson = vp.PoissonOperator(mra=mra, prec=self.prec)
+        self.potential = None
         self.setup()
 
     def setup(self):
-        tmp = (self.Phi[0]**2).crop(self.prec)
-        for i in range(1, len(self.Phi)):
-            tmp += (self.Phi[i]**2).crop(self.prec)
-        self.rho = (2.0*4.0*np.pi)*self.P(tmp).crop(self.prec)
+        rho = self.Psi[0]**2
+        for i in range(1, len(self.Psi)):
+            rho += self.Psi[i]**2
+        rho.crop(self.prec)
+        self.potential = (4.0*np.pi)*self.poisson(rho).crop(self.prec)
 
     def __call__(self, Phi):
-        """Operate Couloumb operator onto an orbital vector Phi"""
-        return self.rho*Phi
+        """Apply Couloumb operator onto an orbital vector Phi"""
+        return np.array([(self.potential*phi).crop(self.prec) for phi in Phi])
+
 
 
 class NuclearOperator():
@@ -83,33 +115,31 @@ class NuclearOperator():
 
     Parameters
     ----------
-
     mra : The multiresolution analysis we work on
-    atoms : Atoms, list of list containing charge and coordinates of the atoms
+    atoms : List of dicts containing charge and coordinates of the atoms
     prec : Precision requirement
 
     Attributes
     ----------
-    mra : mra
-    atoms: atoms
-    rho : Nuclear potential
+    potential : Nuclear potential
 
     """
-    def __init__(self, mra, atoms, prec=1.0e-4):
+    def __init__(self, mra, atoms, prec):
         self.mra = mra
         self.prec= prec
         self.atoms = atoms
-        self.rho = None
+        self.potential = None
         self.setup()
 
     def setup(self):
-        adaptive_projector = vp.ScalingProjector(mra=self.mra, prec=self.prec)
-        f = NuclearFunction(self.atoms)
-        self.rho = adaptive_projector(f)
+        # Project analytic function onto MRA basis
+        P_mra = vp.ScalingProjector(mra=self.mra, prec=self.prec)
+        f_nuc = NuclearFunction(self.atoms)
+        self.potential = P_mra(f_nuc)
 
     def __call__(self, Phi):
-        """Operate Nuclear potential operator onto an orbital vector"""
-        return Phi*self.rho.crop(self.prec)
+        """Apply nuclear potential operator onto an orbital vector"""
+        return np.array([(self.potential*phi).crop(self.prec) for phi in Phi])
 
 class NuclearFunction():
     """
@@ -118,11 +148,7 @@ class NuclearFunction():
     Parameters
     ----------
 
-    atoms : Atoms, list of list containing charge and coordinates of the atoms
-
-    Attributes
-    ----------
-    atoms: atoms
+    atoms : List of dicts containing charge and coordinates of the atoms
 
     """
 
@@ -130,45 +156,12 @@ class NuclearFunction():
     def __init__(self, atoms):
         self.atoms = atoms
 
-    def __call__(self, R):
+    def __call__(self, r):
         "Returns the nuclear potential value in R"
-        tmp = 0
+        tmp = 0.0
         for atom in self.atoms:
-            Z = atom[0]
-            R0 = atom[1]
-            tmp += -Z / ((R0[0] - R[0])**2 + (R0[1] - R[1])**2 + (R0[2] - R[2])**2)**0.5
+            Z = atom["Z"]
+            R = atom["R"]
+            R2 = (R[0]-r[0])**2 + (R[1]-r[1])**2 + (R[2]-r[2])**2
+            tmp += -Z / np.sqrt(R2)
         return tmp
-
-class HelmholtzOperator():
-    """
-    Vectorized helmholtz operator
-
-    Parameters
-    ----------
-    epsilon : vector of orbital energies
-    mra : The multiresolution analysis
-    prec : Precision
-
-    Attributes
-    ----------
-    epsilon : orbital energies
-    mra : mra
-    prec : precision
-    operators : list containing HelmholtzOperators for each orbital
-
-    """
-    def __init__(self, epsilon, mra, prec=1.0e-4):
-        self.epsilon = epsilon
-        self.mra = mra
-        self.prec = prec
-        self.operators = []
-        self.setup()
-
-    def setup(self):
-        mu = [np.sqrt(-2.0*e) if e < 0 else np.sqrt(2.0) for e in self.epsilon]
-        for m in mu:
-            self.operators.append(vp.HelmholtzOperator(mra=self.mra, exp=m, prec=self.prec))
-
-    def __call__(self, potential):
-        """Operate the Helmholtz operator onto an orbital vector"""
-        return np.array([self.operators[i](potential[i]) for i in range(len(potential))])
