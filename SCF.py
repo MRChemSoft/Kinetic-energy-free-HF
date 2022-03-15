@@ -1,10 +1,9 @@
-from filecmp import DEFAULT_IGNORES
 import numpy as np
 import numpy.linalg as LA
 from  vampyr import vampyr3d as vp
 from Operators import NuclearOperator, CouloumbOperator, ExchangeOperator, HelmholtzOperator
 
-def scf_solver(mra, atoms, Phi_n, F_n, precision):
+def scf_solver(mra, atoms, Phi_n, F_n, precision, threshold, max_iter=30):
     """Kinetric-free Hartree-Fock SCF solver
 
     Parameters:
@@ -13,6 +12,8 @@ def scf_solver(mra, atoms, Phi_n, F_n, precision):
     Phi_n : Starting guess orbitals
     F_n : Starting guess for Fock matrix
     precision : Precision requirement
+    threshold : Usually set to the same as precision, set to -1 to limit iterations by max_iter
+    max_iter : Set maximum iterations
 
     Returns:
     Updates : Vector of orbital residual norms at each iteration
@@ -25,14 +26,15 @@ def scf_solver(mra, atoms, Phi_n, F_n, precision):
     V_nuc = NuclearOperator(mra, atoms, precision)
 
     # Loop parameters
-    iter = 0                     # Iteration counter
-    thrs = 10.0*precision        # Set convergence threshold
+    iteration = 0                # Iteration counter
     update = np.ones(len(Phi_n)) # Initialize error measure (norm of orbital updates)
     updates = []                 # Will capture wavefunction updates for visusualization
     energies = []                # Will capture energies for visualization
 
     # SCF loop
-    while (max(update) > thrs):
+    while (max(update) > threshold):
+        if iteration > max_iter-1:
+            break
 
         # Initialize operators for first iteration
         J_n = CouloumbOperator(mra, Phi_n, precision)
@@ -40,13 +42,13 @@ def scf_solver(mra, atoms, Phi_n, F_n, precision):
 
         # Initialize vector of Helmholtz operators based on Fock matrix diagonal
         Lambda_n = np.diag(np.diag(F_n))
-        H = HelmholtzOperator(mra, np.diag(Lambda_n), precision)
+        G = HelmholtzOperator(mra, np.diag(Lambda_n), precision)
 
         # Apply potential operator to all orbitals
         VPhi = V_nuc(Phi_n) + 2*J_n(Phi_n) - K_n(Phi_n)
 
         # Apply Helmholtz operators to all orbitals
-        Phi_np1 = -2*H(VPhi + (Lambda_n - F_n) @ Phi_n)
+        Phi_np1 = -2*G(VPhi + (Lambda_n - F_n) @ Phi_n)
         dPhi_n = Phi_np1 - Phi_n
         update = np.array([phi.norm() for phi in dPhi_n])
 
@@ -86,8 +88,8 @@ def scf_solver(mra, atoms, Phi_n, F_n, precision):
         # Collect output
         updates.append(update)
         energies.append(energy)
-        print(iter, " |  E_tot:", energy["$E_{tot}$"], " |  dPhi:", max(update))
-        iter += 1
+        print(iteration, " |  E_tot:", energy["$E_{tot}$"], " |  dPhi:", max(update))
+        iteration += 1
 
 
     return np.array(updates), energies, Phi_n
